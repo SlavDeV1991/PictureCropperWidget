@@ -23,24 +23,38 @@ class CroppingLineGraphicsItem(QGraphicsItem):
     """
     Linia pozwalajaca kadrowac/wycinac obraz
     """
+    MAX_MIN_OFFSET = 10
+
     class ChangedPosSignal(QObject):
         changed_pos_sig = Signal(int)
 
         def __init__(self):
             super(CroppingLineGraphicsItem.ChangedPosSignal, self).__init__()
 
-    def __init__(self, pos, start, length, vertical=False, parent=None):
+    def __init__(self, pos, start, length, min_pos, max_pos, vertical=False, parent=None):
         super(CroppingLineGraphicsItem, self).__init__(parent)
         self.changed_pos_sig = CroppingLineGraphicsItem.ChangedPosSignal()
         self._width = 10
         self._vertical = vertical
         self._start = start
         self._length = length
+        self._min = 0
+        self._max = 0
         self._bounding_rect = None
         self._line = None
+        self._pen_width = 3
+        self.set_max(max_pos)
+        self.set_min(min_pos)
         self._set_pos(pos)
         self._set_line_and_border()
         self.setFlag(QGraphicsItem.ItemIsMovable)
+        self.setAcceptHoverEvents(True)
+
+    def set_max(self, max_pos):
+        self._max = max_pos - self.MAX_MIN_OFFSET
+
+    def set_min(self, min_pos):
+        self._min = min_pos + self.MAX_MIN_OFFSET
 
     def _set_line_and_border(self):
         if self._vertical:
@@ -51,21 +65,21 @@ class CroppingLineGraphicsItem(QGraphicsItem):
             self._line = QLineF(self._start, 0, self._start + self._length, 0)
 
     def _set_pos(self, pos):
-        self._pos = pos
-        if self._vertical:
-            self.setPos(pos, 0)
-        else:
-            self.setPos(0, pos)
+        if self._min < pos < self._max:
+            self._pos = pos
+            self.changed_pos_sig.changed_pos_sig.emit(pos)
+            if self._vertical:
+                self.setPos(pos, 0)
+            else:
+                self.setPos(0, pos)
 
     def boundingRect(self, *args, **kwargs):
-        print(f"bpundindg rect {self._bounding_rect}")
-        print(f"pos {self.pos()}")
         return self._bounding_rect
 
     def paint(self, painter, option, widget):
         pen = painter.pen()
         pen.setStyle(Qt.DashLine)
-        pen.setWidth(3)
+        pen.setWidth(self._pen_width)
         painter.setPen(pen)
         painter.setOpacity(0.5)
         painter.drawLine(self._line)
@@ -74,7 +88,17 @@ class CroppingLineGraphicsItem(QGraphicsItem):
         pos = event.scenePos().x() if self._vertical else event.scenePos().y()
         self._set_pos(pos)
         self.update()
-        self.changed_pos_sig.changed_pos_sig.emit(pos)
+
+    def hoverEnterEvent(self, event):
+        self._pen_width = 6
+        self.update()
+
+    def hoverLeaveEvent(self, event):
+        self._pen_width = 3
+        self.update()
+
+    def get_pos(self):
+        return self._pos
 
 
 class CropperGraphicsItem(QGraphicsItem):
@@ -131,41 +155,35 @@ class CroppingImageWidget(QtWidgets.QWidget):
         self.scene.setSceneRect(cam_item.boundingRect())
 
     def _create_items(self, cam_item):
-        """
-
-        :param cam_item:
-        """
         l = 0.2*cam_item.boundingRect().width()
         r = 0.8*cam_item.boundingRect().width()
         t = 0.2*cam_item.boundingRect().height()
         b = 0.8*cam_item.boundingRect().height()
         cropper = CropperGraphicsItem(cam_item, l, r, t, b)
         offset = 1000
-        line_left = CroppingLineGraphicsItem(l, -offset, cam_item.boundingRect().height()+2*offset, vertical=True)
-        # line_left = CroppingLineGraphicsItem(100, -1000, 3000, vertical=True)
-        line_right = CroppingLineGraphicsItem(r, -offset, cam_item.boundingRect().height()+2*offset, vertical=True)
-        line_top = CroppingLineGraphicsItem(t, -offset, cam_item.boundingRect().width()+2*offset)
-        line_bottom = CroppingLineGraphicsItem(b, -offset, cam_item.boundingRect().width()+2*offset)
-        line_left.changed_pos_sig.changed_pos_sig.connect(cropper.on_left_changed)
-        line_right.changed_pos_sig.changed_pos_sig.connect(cropper.on_right_changed)
-        line_top.changed_pos_sig.changed_pos_sig.connect(cropper.on_top_changed)
-        line_bottom.changed_pos_sig.changed_pos_sig.connect(cropper.on_bottom_changed)
-        line_left.changed_pos_sig.changed_pos_sig.connect(self.scene.update)
-        line_right.changed_pos_sig.changed_pos_sig.connect(self.scene.update)
-        line_top.changed_pos_sig.changed_pos_sig.connect(self.scene.update)
-        line_bottom.changed_pos_sig.changed_pos_sig.connect(self.scene.update)
-        self.scene.addItem(cam_item)
-        self.scene.addItem(cropper)
-        self.scene.addItem(line_left)
-        self.scene.addItem(line_right)
-        self.scene.addItem(line_bottom)
-        self.scene.addItem(line_top)
+        self.line_left = CroppingLineGraphicsItem(l, -offset, cam_item.boundingRect().height()+2*offset, 0,
+                                                  r, vertical=True)
+        self.line_right = CroppingLineGraphicsItem(r, -offset, cam_item.boundingRect().height()+2*offset, l,
+                                                   cam_item.boundingRect().width(), vertical=True)
+        self.line_top = CroppingLineGraphicsItem(t, -offset, cam_item.boundingRect().width()+2*offset, 0, b)
+        self.line_bottom = CroppingLineGraphicsItem(b, -offset, cam_item.boundingRect().width()+2*offset,
+                                                    t, cam_item.boundingRect().height())
+        self.line_left.changed_pos_sig.changed_pos_sig.connect(cropper.on_left_changed)
+        self.line_right.changed_pos_sig.changed_pos_sig.connect(cropper.on_right_changed)
+        self.line_top.changed_pos_sig.changed_pos_sig.connect(cropper.on_top_changed)
+        self.line_bottom.changed_pos_sig.changed_pos_sig.connect(cropper.on_bottom_changed)
+        for line in [self.line_left, self.line_right, self.line_top, self.line_bottom]:
+            line.changed_pos_sig.changed_pos_sig.connect(self.scene.update)
+        for item in [cam_item, cropper, self.line_left, self.line_right, self.line_top, self.line_bottom]:
+            self.scene.addItem(item)
+        self.line_left.changed_pos_sig.changed_pos_sig.connect(self.line_right.set_min)
+        self.line_right.changed_pos_sig.changed_pos_sig.connect(self.line_left.set_max)
+        self.line_top.changed_pos_sig.changed_pos_sig.connect(self.line_bottom.set_min)
+        self.line_bottom.changed_pos_sig.changed_pos_sig.connect(self.line_top.set_max)
 
     def resizeEvent(self, event):
         """
         ResiczeEvent do nadpisania w qgraphicsView
-        :param event:
-        :return:
         """
         self.graphics_view.fitInView(self._camera_item.boundingRect(), Qt.KeepAspectRatio)
         QGraphicsView.resizeEvent(self.graphics_view, event)
@@ -208,6 +226,15 @@ class CroppingImageWidget(QtWidgets.QWidget):
         dark_palette.setColor(QPalette.HighlightedText, Qt.black)
         qApp.setPalette(dark_palette)
         qApp.setStyleSheet("QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }")
+
+    def get_border(self):
+        """
+        zwraca zaznaczony/skrojony prostokat
+        """
+        return (self.line_left.get_pos(),
+                self.line_right.get_pos(),
+                self.line_top.get_pos(),
+                self.line_bottom.get_pos())
 
 
 def main():
